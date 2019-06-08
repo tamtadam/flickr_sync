@@ -9,6 +9,7 @@ use File::Find;
 use FindBin ;
 use Thread::Pool::Simple;
 use Thread::Semaphore;
+use List::MoreUtils qw(first_value last_value uniq);
 
 use lib $FindBin::RealBin;
 use lib $FindBin::RealBin . "../../../common/cgi-bin/" ;
@@ -50,6 +51,8 @@ sub init {
     $self->{ user_id }   = $_[ 0 ]->{ user_id };
     $self->{ api }       = Flickr::API->import_storable_config( $_[ 0 ]->{ auth } );
     $self->{ DB_HANDLE } = $_[ 0 ]->{ DB_HANDLE };
+    $self->{ image_data } = $_[ 0 ]->{ image_data };
+    
     $self->{ pool }      = Thread::Pool::Simple->new(
         min => 1,
         max => 1,
@@ -71,12 +74,13 @@ sub call {
 sub get_photosets {
     my $self = shift;
     my $params = shift;
-
+    
+    my $method = "flickr.photosets.getList";
     $params->{ user_id } ||= $self->{ user_id };
     
-    $log->info( "flickr.photosets.getList called" );
-    my $response = $self->call( 'flickr.photosets.getList', $params );
-    $log->info( "flickr.photosets.getList finished" );
+    $log->info( "$method called" );
+    my $response = $self->call( $method, $params );
+    $log->info( "$method finished" );
     return $response->{hash}->{photosets}->{photoset};
 }
 
@@ -94,9 +98,11 @@ sub get_photos_by_set {
 
     $params->{ user_id } ||= $self->{ user_id };
     
-    $log->info( "flickr.photosets.getPhotos called" );
+    $log->info( "flickr.photosets.getPhotos called" . Dumper $params );
     my $response = $self->call( 'flickr.photosets.getPhotos', $params );
     $log->info( "flickr.photosets.getPhotost finished" );
+
+    next unless ref $response->{hash}->{photoset}->{photo} eq 'ARRAY' ;
     push @photos, @{ $response->{hash}->{photoset}->{photo} };
 
     if ( $response->{hash}->{photoset}->{pages} !=
@@ -108,7 +114,9 @@ sub get_photos_by_set {
         push @photos, @photos_of_page;
 
     }
-    
+
+    delete $params->{ page } ;
+
     return \@photos;
 
 }
@@ -169,10 +177,10 @@ sub set_perms_for_set {
     my $pool = Thread::Pool::Simple->new(
        min => 1,           # at least 3 workers
        max => 8,           # at most 5 workers
-       do => [\&do_handle, $self]     # job handler for each worker
+       do => [\&do_handle_for_perm, $self]     # job handler for each worker
     );
      
-    sub do_handle {
+    sub do_handle_for_perm {
         my $self  = shift ;
         my $photo = shift ;
         my $params   = shift ;
@@ -198,6 +206,7 @@ sub set_perms_for_set {
             $params->{ photo_id } = $photo->{ id };
             $log->info( scalar @{ $response } . "/" . $cnt++ );
             my $perms = $self->get_perms( $params ) ;
+
             next if $perms->{ ispublic } == 1;
             next if $perms->{ isfamily } == $params->{ is_family };
             
@@ -215,9 +224,11 @@ sub set_perms_comment {
     my $self = shift;
     my $params = shift;
     
-    $log->info( "flickr.photosets.setPerms called: " . $params->{ photo_id } );
-    my $response = $self->call( 'flickr.photos.setPerms', $params );
-    $log->info( "flickr.photosets.setPerms finished: " . $params->{ photo_id } );
+    my $method = "flickr.photos.setPerms";
+        
+    $log->info( "$method called: " . Dumper $params );
+    my $response = $self->call( $method, $params );
+    $log->info( "$method finished: " . Dumper $params );
     return $response->{hash}->{photosets}->{photoset};
 
 }
@@ -226,19 +237,76 @@ sub get_perms {
     my $self = shift;
     my $params = shift;
     
-    $log->info( "flickr.photosets.getPerms called: " . $params->{ photo_id } );
-    my $response = $self->call( 'flickr.photos.getPerms', $params );
-    $log->info( "flickr.photosets.getPerms finished: " . $params->{ photo_id } );
+    my $method = "flickr.photos.getPerms";
+        
+    $log->info( "$method called: " . $params->{ photo_id } );
+    my $response = $self->call( $method, $params );
+    $log->info( "$method finished: " . $params->{ photo_id } );
     
     if ( $response->{ hash }->{ stat } eq 'ok') {
         return $response->{ hash }->{ perms };
  
     } else {
         return {};
-        
+
     }
 }
 
+sub remove_tag {
+    my $self = shift ;
+    my $params = shift;
+    
+    my $method = "flickr.photos.removeTag";
+        
+    $log->info( "$method called: " . $params->{ tag_id } );
+    my $response = $self->call( $method, $params );
+    
+    $log->info( "$method finished: " . $params->{ tag_id } );
+}
+
+sub get_exif {
+    my $self = shift;
+    my $params = shift;
+    
+    my $method = "flickr.photos.getPerms";
+        
+    $log->info( "flickr.photos.getExif called: " . $params->{ photo_id } );
+    my $response = $self->call( 'flickr.photos.getExif', $params );
+    $log->info( "flickr.photos.getExif finished: " . $params->{ photo_id } );
+    return $response->{ hash }->{ photo }->{ exif };
+
+}
+
+sub get_info {
+    my $self = shift;
+    my $params = shift;
+    
+    my $method = "flickr.photos.getInfo";
+        
+    $log->info( "$method called: " . $params->{ photo_id } );
+    my $response = $self->call( $method, $params );
+    $log->info( "$method finished: " . $params->{ photo_id } );
+    
+    if ( $response->{ hash }->{ stat } eq 'ok') {
+        return $response->{ hash }->{ photo };
+ 
+    } else {
+        return {};
+    }
+}
+
+sub get_tag_ids_from_info {
+    my $self   = shift ;
+    my $photo  = shift || {} ;
+    my $tags   = shift || {} ;
+    
+    my @found;
+    foreach my $tag ( grep { not defined $tags->{ $_ } } keys %{ $tags } ) {
+        @found = grep { $_->{ raw } =~ /^$tag$/ } @{ $photo->{ tags }->{ tag } || [] } ;
+        $tags->{ $tag } = $found[ 0 ]->{ id };
+    }
+
+}
 
 =pod
 
@@ -292,6 +360,127 @@ sub sync_photos_to_db_by_set_id {
     return $cnt;
 
 }
+
+sub sync_flickr_tags_from_exif {
+    my $self = shift;
+    my $params = shift || return undef;
+
+    my $pool = Thread::Pool::Simple->new(
+       min => 1,           # at least 3 workers
+       max => 8,           # at most 5 workers
+       do => [\&do_handle, $self]     # job handler for each worker
+    );
+
+    sub do_handle {
+        my $self     = shift ;
+        my $photo_id = shift ;
+        my $tags     = shift ;
+        $self->add_tags( {
+            photo_id => $photo_id,
+            tags     => $tags
+        } );
+        return 1;
+    }
+
+    my $response = $self->get_photosets( $params ) || [];
+    foreach my $set ( grep { $_->{ title } =~/^2019_02_24_baboci_vece*/} @{ $response } ) { # 201(9)_. 5|6|7|8|
+        $log->info( "set: " . $set->{ title } );
+        
+        $params->{ photoset_id } = $set->{ id };
+        
+        my $photos = $self->get_photos_by_set( $params ) || [];
+        my $photos_on_nas = $self->my_select(
+                {
+                    'from'   => 'photosinnas',
+                    'select' => 'ALL',
+                    'where'  => {
+                        LastSet => $set->{ title },
+                    }
+                }
+            ) ;
+        
+
+        $log->info( scalar @{ $photos_on_nas || [] } . " found on nas " . scalar @{ $photos || [] } . " found on flickr"  );
+ 
+        next unless $photos_on_nas;
+         
+        foreach my $photo ( @{ $photos } ) {
+            $log->info( $set->{ title } .": photo: " . $photo->{ title } );
+            my $photo_to_tag = @{ [ grep { $_->{ FullFileName } =~/$photo->{ title }/ } @{ $photos_on_nas } ] || [] }[ 0 ];
+            
+            next unless $photo_to_tag ;
+            
+            $log->info( $set->{ title } .": path: " . $photo_to_tag->{ Path } );
+            
+            my $tags = $self->{ image_data }->get_image_data( $photo_to_tag->{ Path }, [ qw( LensID Lens LensModel Model FocalLength ) ] );
+               $tags = $self->{ image_data }->add_new_tags( $tags );
+               $tags = $self->{ image_data }->change_tags( $tags );
+               $tags = [ uniq @{ $tags } ] ;
+            $log->info( "    tags: " . join( ",", grep{ defined $_ and $_ ne "----" } @{ $tags } ) );
+
+
+            $pool->add(  $photo->{ id }, join( ",", grep{ defined $_ and $_ ne "----" } @{ $tags } ) ) if $tags;
+
+        }
+
+    }
+    $pool->join();
+}
+
+sub remove_tags {
+    my $self = shift;
+    my $params = shift || return undef;
+
+    my $tags_hash = { map { $_ => undef } @{ $params->{ tags } } } ;
+    
+    my $pool = Thread::Pool::Simple->new(
+       min => 1,           # at least 3 workers
+       max => 8,           # at most 5 workers
+       do => [\&do_handle, $self]     # job handler for each worker
+    );
+
+    sub do_handle {
+        my $self     = shift ;
+        my $photo_id = shift ;
+        my $tags     = shift ;
+        $self->add_tags( {
+            photo_id => $photo_id,
+            tags     => $tags
+        } );
+        return 1;
+    }
+
+    my $response = $self->get_photosets( $params ) || [];
+    foreach my $set ( grep { $_->{ title } =~/^$params->{filter}.*/} @{ $response } ) { # 5|6|7|8|
+        $log->info( "set: " . $set->{ title } );
+        
+        $params->{ photoset_id } = $set->{ id };
+        
+        my $photos = $self->get_photos_by_set( $params ) || [];
+        my $photo_info ;
+        PHOTO: foreach my $photo ( @{ $photos } ) {
+            $log->info( $set->{ title } .": photo: " . $photo->{ title } );
+            if ( scalar grep { not defined $tags_hash->{ $_ } } keys %{ $tags_hash } ) {
+                $photo_info = $self->get_info( {
+                    photo_id => $photo->{ id }
+                } ) ;
+
+                $self->get_tag_ids_from_info( $photo_info, $tags_hash ) ;
+            } else {
+                $self->remove_tag( { 
+                    tag_id   => $_, 
+                    user_id  => $params->{ user_id },
+                    photo_id => $photo->{ id } } ) foreach values %{ $tags_hash } ;
+
+            }
+        }
+        $self->remove_tag( { tag_id => $_, user_id => $params->{ user_id } } ) foreach values %{ $tags_hash } ;
+    }
+    $pool->join();
+
+}
+
+
 
 
 sub sync_flickr_to_db {
@@ -376,11 +565,12 @@ sub add_file_to_db {
     ) ;
 
     $log->info( "Add file from NAS to db: " . $path . " STARTED" );
+
     my $id = $self->my_insert( {
         'insert' => {
             'Path'     => $path,
             'Status'   => 'SYNCED',
-            'FullFileName' => $file_name,
+            'FullFileName' => $full_file_name,
             'FileName' => $file_name,
             'Dir'      => $dir,
             'LastSet'  => $set->[ -1 ],
@@ -475,7 +665,22 @@ sub mark_for_delete {
     return $photo_list;
 }
 
-sub add_tag {
+sub add_tags {
+    my $self  = shift ;
+    my $photo = shift ;
+    print Dumper $photo;
+    my $method = "flickr.photos.addTags" ;
+    $log->info( "$method called: " . $photo->{ photo_id } );
+    my $response = $self->call( $method, { 
+        photo_id => $photo->{ photo_id },
+        tags     => $photo->{ tags }
+    } );
+    $log->info( "$method finished: " . $photo->{ photo_id } . " - " . $photo->{ tags } );
+    return $response ;
+
+}
+
+sub add_delete_tag {
     my $self = shift;
     my $photos = shift || [];   
 

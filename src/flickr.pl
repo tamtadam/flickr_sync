@@ -14,20 +14,16 @@ use lib $FindBin::RealBin . "../../cgi-bin/" ;
 
 use DBConnHandler;
 use FlickrSync;
+use ImageData;
 
 use Log::Log4perl qw(:easy);
 Log::Log4perl::init('../conf/log4perl.conf');
 my $log = Log::Log4perl->get_logger();
 
-
 $ENV{HOME} = "";
 $ENV{XML_SIMPLE_PREFERRED_PARSER }="XML::Parser";
 
-my $ua = Flickr::Upload->new(
-        {
-                'key' => "ed631024fc76d2d6a2c7bca46c763744",
-                'secret' => "00af7ab1ccf4951b"
-        });
+my $id = new ImageData();
 
 my $config_file = "$ENV{HOME}.flickroauth.st";
 
@@ -55,16 +51,11 @@ my $res = $ua->upload(
 
 =cut
 
-# 2019_03_03_baboci_studio
-# 2019_03_08_baboci_studio_var
-# 2019_03_17_baboci_fuveszkert
-# 2019_02_25_baboci_vajdahunyad
-
-
+# 2019_04_08_vacratot_arboretum
 my $folders = $flickr->get_photosets_key_folder() || {};
-my $root_folder = "z:\\2019\/2019_02_16_baboci_vece\/";
+my $root_folder = "z:\\2019\/2019_06_02_baboci\/";
 my $root_set = "__2019__";
-my $skip = "xmp|NEF|arw";
+my $skip = "xmp|NEF|arw|dng";
 
 $SIG{INT} = sub { 
     print Dumper $folders;
@@ -135,6 +126,8 @@ sub process {
     next if $path =~/xmp|NEF|ARW/i || !-f $path || $path =~/Thumbs.db/;
     
     $log->info( "\n" . 'Uploading ' . $path . '...' . "\n" );
+    my $tags = join( ",", grep{ defined $_ and $_ ne "----" } ( @{ $id->get_image_data( $path , [ qw( LensID Lens LensModel Model FocalLength ) ] ) } ) ) ;
+    $log->info( $tags );
     my $photo_id = $ua->upload(
         'photo'      => $path,
         'auth_token' => $ua,
@@ -147,6 +140,10 @@ sub process {
     $log->info( "\n" . 'Uploading ' . $path . ' FINISHED' . "\n");
     store_photo_in_set($dir, $photo_id);
     
+    $flickr->add_tags( {
+        photo_id => $photo_id,
+        tags     => $tags
+    } );
     if ( -e "exit_from_flickr.txt" ) {
         $log->info( "WAITING FOR USER USER INPUT TO STOP PROCESSING: Y stop, Other continue");
         
