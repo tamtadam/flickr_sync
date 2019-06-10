@@ -1,6 +1,8 @@
 use strict;
 use warnings;
 use Data::Dumper;
+use File::Slurp qw(write_file);
+
 
 use FindBin ;
 use lib $FindBin::RealBin;
@@ -157,21 +159,33 @@ subtest 'sync_photoset_to_db' => sub {
         from   => 'Sets',
         select => 'ALL',
     });
+
     ok( $res->[ 0 ]->{ SetID } == 1, 'id of the element' );
-    
+
     is_deeply( [
-          {
-            'Photos' => '11',
-            'Videos' => '11',
-            'PrimaryPhotoID' => '11',
-            'Status' => 'SYNCED',
-            'ExternalID' => '11',
-            'Title' => '2015_dec_23_',
-            'SetID' => 1,
-            'Description' => '2015_dec_23_',
-            'SecretID' => '11',
-          }
-    ] , $data, "database is set properly for video");
+        {
+            'ExternalID'     => 10,
+            'SetID'          => 1,
+            'PrimaryPhotoID' => 10,
+            'Status'         => 'SYNCED',
+            'Description'    => '__2016__',
+            'Videos'         => 10,
+            'SecretID'       => 10,
+            'Photos'         => 10,
+            'Title'          => '__2016__'
+        },
+        {
+            'Title'          => '2015_dec_23_',
+            'SetID'          => 2,
+            'ExternalID'     => 11,
+            'PrimaryPhotoID' => 11,
+            'Status'         => 'SYNCED',
+            'Description'    => '2015_dec_23_',
+            'Videos'         => 11,
+            'SecretID'       => 11,
+            'Photos'         => 11
+        }
+    ], $data, "database is set properly for video");
     $flickr_api_mock->unmock( 'get_photosets' );
 };
 
@@ -255,11 +269,18 @@ subtest 'sync_flickr_to_db' => sub {
 
 };
 
+
 subtest 'add_file_to_db' => sub {
     my $fs_mock = TestMock->new( 'FlickrSync' );
     $fs_mock->mock( 'get_file_data' );
     $fs_mock->mock( 'filter' );
+    $fs_mock->mock( 'get_formatted_time' );
+    $fs_mock->mock( 'is_image_already_in_db' );
+    
+    $fs_mock->is_image_already_in_db( undef, undef, undef, undef );
+
     $fs_mock->get_file_data( [ 'asads/asdf/ketto.jpg', 'ketto', 'ketto.jpg', 'asads/asdf/', ['sss', '2015_dec_23_'] ] );
+    $fs_mock->get_formatted_time( '1970-01-01 01:00:00', '1971-01-01 01:00:00' );
     $fs_mock->filter( [1] );
 
     $fs->add_file_to_db();
@@ -269,8 +290,96 @@ subtest 'add_file_to_db' => sub {
         select => 'ALL',
     });
 
-    ok( $data->[ 0 ]->{ SetID } == 1, 'correct set was selected' );
+    is_deeply( $data->[ 0 ], {
+            'PhotosInNASID' => 1,
+            'Path'          => 'asads/asdf/ketto.jpg',
+            'FileName'      => 'ketto',
+            'Dir'           => 'asads/asdf/',
+            'SizeInByte'    => 0,
+            'SetID'         => 2,
+            'Status'        => 'SYNCED',
+            'FullFileName'  => 'ketto.jpg',
+            'LastModified'  => '1971-01-01 01:00:00',
+            'LastAccess'    => '1970-01-01 01:00:00',
+            'LastSet'       => '2015_dec_23_'
+      }, 'correct set was selected' );
 
+    #
+    #
+    # passing file path as argument
+    #
+    #
+    $fs_mock->get_formatted_time( '1972-01-01 01:00:00', '1973-01-01 01:00:00' );
+    write_file('testfile2.png', [0..10]);
+
+    $fs_mock->get_file_data( [ 'testfile2.png', 'testfile2', 'testfile2.png', 'asads/asdf/', ['sss', '2015_dec_23_'] ] );
+    $fs_mock->filter( [1] );
+
+    $fs->add_file_to_db( 'testfile2.png' );
+
+    $data = $DBH->my_select({
+        from   => 'photosinnas',
+        select => 'ALL',
+    });
+    is_deeply( $data->[ 1 ], {
+            'PhotosInNASID' => 2,
+            'Path'          => 'testfile2.png',
+            'FileName'      => 'testfile2',
+            'Dir'           => 'asads/asdf/',
+            'SizeInByte'    => 12,
+            'SetID'         => 2,
+            'Status'        => 'SYNCED',
+            'FullFileName'  => 'testfile2.png',
+            'LastModified'  => '1973-01-01 01:00:00',
+            'LastAccess'    => '1972-01-01 01:00:00',
+            'LastSet'       => '2015_dec_23_'
+      }, 'add file as argument' );
+
+    $fs_mock->empty_buffers( 'is_image_already_in_db' );
+    $fs_mock->unmock( 'is_image_already_in_db' );
+    $fs_mock->unmock( 'filter' );    
+};
+
+
+subtest "is_image_already_in_db" => sub {
+    my $fs_mock = TestMock->new( 'FlickrSync' );
+    $fs_mock->mock( 'get_file_data' );
+    $fs_mock->mock( 'filter' );
+    $fs_mock->mock( 'get_formatted_time' );
+    $fs_mock->get_formatted_time( '1973-01-01 01:00:00' );
+
+    write_file('testfile2.png', [0..10]);
+
+    my $res = $fs->is_image_already_in_db( 'testfile2.png' );
+    ok( $res, 'filepath, size, last modification time are the same');
+    
+    $fs_mock->get_formatted_time( '1973-01-01 01:00:01' );
+    write_file('testfile2.png', [0..10]);
+    $res = $fs->is_image_already_in_db( 'testfile2.png' );
+    ok( !defined $res, 'filepath and size is the same, last modification time differs');
+
+    $fs_mock->get_formatted_time( '1973-01-01 01:00:00' );
+    write_file('testfile2.png', [0..20]);
+    $res = $fs->is_image_already_in_db( 'testfile2.png' );
+    ok( !defined $res, 'filepath and last modification time are the same, size differs');
+
+    $fs_mock->get_formatted_time( '1973-01-01 01:00:00' );
+    write_file('testfile3.png', [0..10]);
+    $res = $fs->is_image_already_in_db( 'testfile2.png' );
+    ok( !defined $res, 'size and last modification time are the same, filepath differs');
+
+    unlink( 'testfile' + $_  + '.png' ) for 1, 2;
+};
+
+subtest 'mark_for_update_in_cloud' => sub {
+    my $fs_mock = TestMock->new( 'FlickrSync' );
+    $fs_mock->mock( 'get_file_data' );
+    $fs_mock->mock( 'filter' );
+    
+    $fs_mock->filter( [1] );
+    $fs_mock->get_file_data( [ 'testfile2.png', 'testfile2', 'testfile2.png', 'asads/asdf/', ['sss', '2015_dec_23_'] ] );
+    
+    $fs->mark_for_update_in_cloud( 'testfile3.png' );
 };
 
 subtest "mark_for_delete" => sub {
@@ -328,22 +437,5 @@ subtest "mark_for_delete" => sub {
 };
 
 
-subtest 'add_tag' => sub {
-    my $fs_mock = TestMock->new( 'FlickrSync' );
-    $fs_mock->mock( 'call' );
 
-    $fs->add_tag( [
-        { PhotoExternalID => 1 },
-        { PhotoExternalID => 2 },
-        { PhotoExternalID => 3 }
-    ] );
-
-    my @res = $fs_mock->call();
-    ok( $res[ 2 ]->{ photo_id } == 1, 'first item' );
-    ok( $res[ 5 ]->{ photo_id } == 2, 'first item' );
-    ok( $res[ 8 ]->{ photo_id } == 3, 'first item' );
-    ok( $res[ 2 ]->{ tags } eq 'DELETEIT' , 'first item' );
-    ok( $res[ 5 ]->{ tags } eq 'DELETEIT' , 'first item' );
-    ok( $res[ 8 ]->{ tags } eq 'DELETEIT' , 'first item' );
-};
 

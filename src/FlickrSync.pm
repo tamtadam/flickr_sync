@@ -2,6 +2,8 @@ package FlickrSync;
 
 use strict;
 
+use POSIX qw(strftime);
+
 use Flickr::Upload;
 use Flickr::API;
 use Data::Dumper;
@@ -144,6 +146,8 @@ sub get_photos_by_set {
 sub sync_photoset_to_db {
     my $self = shift;
     my $params = shift;
+
+    $params->{ filter } ||= '' ;
 
     my $response = $self->get_photosets( $params ) || [];
     
@@ -529,7 +533,7 @@ sub filter {
     my $self = shift;
     my $path = shift;
     
-    !-f $path || $path =~/LAGZI/ ? return undef : return 1;
+    !-e $path || $path =~/LAGZI/ ? return undef : return 1;
 }
 
 sub get_file_data {
@@ -541,49 +545,87 @@ sub get_file_data {
     $file_name =~/(.*?)\..*$/; 
     my $set = $self->get_folders( $dir );
     
-    return [ $path, $1, $file_name, $dir, $set ] ;
+    return [ $1, $file_name, $dir, $set ] ;
 
 }
 
 
 sub add_file_to_db {
     my $self = shift;
-    my $path = $File::Find::name;
+    my $path = $File::Find::name || shift;
 
     return unless $self->filter( $path );
 
-    my ( $path, $file_name, $full_file_name, $dir, $set ) = @{ $self->get_file_data( $File::Find::name, $_, $File::Find::dir ) };
+    my ( $path, $file_name, $full_file_name, $dir, $set ) = @{ $self->get_file_data( $path, $_, $File::Find::dir ) };
 
+    my @stat = -e $path ? stat( $path ) : (0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0) ;
+    
     my $calc_set_id = $self->my_select(
         {
-          'from'   => 'Sets ',
-          'select' => 'ALL',
-          "where" => {
-              'Description' => $set->[ -1 ]
+          from   => 'Sets ',
+          select => 'ALL',
+          where => {
+              Description => $set->[ -1 ]
           }
         }
     ) ;
 
     $log->info( "Add file from NAS to db: " . $path . " STARTED" );
 
-    my $id = $self->my_insert( {
-        'insert' => {
-            'Path'     => $path,
-            'Status'   => 'SYNCED',
-            'FullFileName' => $full_file_name,
-            'FileName' => $file_name,
-            'Dir'      => $dir,
-            'LastSet'  => $set->[ -1 ],
-            'SetID'    => $calc_set_id->[0]->{ SetID }
+    my $already_in_db = $self->is_image_already_in_db( $path ) ;
+
+    if( $already_in_db ) {
+        $log->info( "Add file from NAS to db: " . $path . " SKIPPED, already in DB" );  
+        return ;
+    }
+    
+    my $id = $self->my_select_insert( {
+        data => {
+            Path         => $path,
+            Status       => 'SYNCED',
+            FullFileName => $full_file_name,
+            FileName     => $file_name,
+            Dir          => $dir,
+            LastSet      => $set->[ -1 ],
+            SetID        => $calc_set_id->[0]->{ SetID },
+            LastAccess   => $self->get_formatted_time( $stat[ 8 ] ),
+            LastModified => $self->get_formatted_time( $stat[ 9 ] ),
+            SizeInByte   => $stat[ 7 ],
         },
-        'table'  => 'photosinnas',
-        'select' => 'PhotosInNASID',
+        table        => 'photosinnas',
+        selected_row => 'PhotosInNASID',
     } );
 
     $log->info( "Add file from NAS to db: " . $path . " FINISHED" );
 
 }
 
+sub is_image_already_in_db {
+    my $self = shift ;    
+    my $path = shift ; 
+
+    return undef unless -e $path ;
+
+    my @stat = -e $path ? stat( $path ) : (0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0) ;
+
+    my $res = $self->my_select( {
+        where => {
+            Path         => $path,
+            LastModified => $self->get_formatted_time( $stat[ 9 ] ),
+            SizeInByte   => $stat[ 7 ]
+        },
+        from     => 'photosinnas',
+        relation => 'and',
+        select   => 'ALL',
+    } );
+    return $res;
+}
+
+sub get_formatted_time {
+    my $self = shift ;
+    my $time = shift ;
+    return POSIX::strftime( "%Y-%m-%d %H:%M:%S", localtime( $time ) ) ;
+}
 
 sub get_folders {
     my $self = shift;
@@ -594,6 +636,35 @@ sub get_folders {
     return \@dir_list
 }
 
+sub mark_for_update_in_cloud {
+    my $self = shift;
+    my $path = $File::Find::name || shift;
+
+    return unless $self->filter( $path );
+
+    my ( $path, $file_name, $full_file_name, $dir, $set ) = @{ $self->get_file_data( $path, $_, $File::Find::dir ) };
+    my @stat = -e $path ? stat( $path ) : (0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0) ;
+    
+    $log->info( "Check file in DB " . $path . " STARTED" );
+    print Dumper [ ( $path, $file_name, $full_file_name, $dir, $set ) ];
+#    LastAccess   => $self->get_formatted_time( $stat[ 8 ] ),
+#    LastModified => $self->get_formatted_time( $stat[ 9 ] ),
+    my $res = $self->my_select( {
+        where => {
+            Path         => $path,
+            FullFileName => $full_file_name,
+            FileName     => $file_name,
+            Dir          => $dir,
+            LastSet      => $set->[ -1 ],
+        },
+        from     => 'photosinnas',
+        select   => 'ALL',
+        relation => 'and'
+    } );
+    
+    print Dumper $res ;
+
+}
 
 sub mark_for_delete {
     my $self = shift;
@@ -668,7 +739,7 @@ sub mark_for_delete {
 sub add_tags {
     my $self  = shift ;
     my $photo = shift ;
-    print Dumper $photo;
+
     my $method = "flickr.photos.addTags" ;
     $log->info( "$method called: " . $photo->{ photo_id } );
     my $response = $self->call( $method, { 

@@ -137,6 +137,9 @@ sub process {
         'tags'       => 'script_upload',
         #'async'      => 1
     ) or $log->info( "Failed to upload $path - *******E R R O R" ) and next;
+
+    $flickr->add_file_to_db();
+
     $log->info( "\n" . 'Uploading ' . $path . ' FINISHED' . "\n");
     store_photo_in_set($dir, $photo_id);
     

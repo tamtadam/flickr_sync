@@ -18,6 +18,8 @@ my $flickr = FlickrSync->new( {
     user_id   => '138370151@N02',
 } );
 
+$flickr->sync_nas_to_db( "z:\\2015\\" );
+$flickr->sync_nas_to_db( "z:\\2016\\" );
+$flickr->sync_nas_to_db( "z:\\2017\\" );
+$flickr->sync_nas_to_db( "z:\\2018\\" );
 $flickr->sync_nas_to_db( "z:\\2019\\" );
-
-
