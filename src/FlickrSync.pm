@@ -152,27 +152,36 @@ sub sync_photoset_to_db {
     my $response = $self->get_photosets( $params ) || [];
     
     foreach my $set ( grep { $_->{ title } =~/$params->{filter}/} @{ $response } ) {
-        $log->info( "Adding " . ( $set->{ title } || $set->{ description } ) . " set STARTED" );
-        $set->{ SetID } = $self->my_select_insert( {
-            'data' => {
-                'ExternalID'     => $set->{id} ,
-                'Title'          => $set->{title} ,
-                'Status'         => 'SYNCED' ,
-                'Photos'         => $set->{photos} ,
-                'Description'    => ( ref $set->{description} ? "N/A" : $set->{description} ) ,
-                'Videos'         => $set->{videos} ,
-                'PrimaryPhotoID' => $set->{primary},
-                'SecretID'       => $set->{secret}
-            },
-            'table'  => 'Sets',
-            'selected_row' => 'SetID',
-        } ) || undef ;
-        $log->info( "Adding " . ( $set->{ title } || $set->{ description } ) . " set FINISHED, id:" . $set->{ SetID } );
+        $set->{ SetID } = $self->add_set_to_db( $set ) || undef ;
+
     }
 
     return [ grep { $_->{ title } =~/$params->{filter}/} @{ $response } ];
 }
 
+sub add_set_to_db {
+    my $self = shift ;
+    my $set  = shift || return undef ;
+    
+    $log->info( "Adding " . ( $set->{ title } || $set->{ description } ) . " set STARTED" );
+    my $res = $self->my_select_insert( {
+        'data' => {
+            'ExternalID'     => $set->{id} ,
+            'Title'          => $set->{title} ,
+            'Status'         => 'SYNCED' ,
+            'Photos'         => $set->{photos} || $set->{ count_videos } ,
+            'Description'    => ( ref $set->{description} ? "N/A" : $set->{description} ) ,
+            'Videos'         => $set->{videos} || $set->{ count_photos } ,
+            'PrimaryPhotoID' => $set->{primary},
+            'SecretID'       => $set->{secret}
+        },
+        'table'  => 'Sets',
+        'selected_row' => 'SetID',
+    } );
+    $log->info( "Adding " . ( $set->{ title } || $set->{ description } ) . " set FINISHED, id:" . $set->{ SetID } );
+    
+    return $res;
+}
 
 sub set_perms_for_set {
     my $self = shift;
@@ -279,6 +288,24 @@ sub get_exif {
     $log->info( "flickr.photos.getExif finished: " . $params->{ photo_id } );
     return $response->{ hash }->{ photo }->{ exif };
 
+}
+
+sub get_set_info {
+    my $self = shift;
+    my $params = shift;
+    
+    my $method = "flickr.photosets.getInfo";
+        
+    $log->info( "$method called: " . $params->{ photoset_id } );
+    my $response = $self->call( $method, $params );
+    $log->info( "$method finished: " . $params->{ photoset_id } );
+
+    if ( $response->{ hash }->{ stat } eq 'ok') {
+        return $response->{ hash }->{ photoset };
+ 
+    } else {
+        return {};
+    }
 }
 
 sub get_info {
@@ -545,7 +572,7 @@ sub get_file_data {
     $file_name =~/(.*?)\..*$/; 
     my $set = $self->get_folders( $dir );
     
-    return [ $1, $file_name, $dir, $set ] ;
+    return [ $path, $1, $file_name, $dir, $set ] ;
 
 }
 
@@ -578,7 +605,7 @@ sub add_file_to_db {
         $log->info( "Add file from NAS to db: " . $path . " SKIPPED, already in DB" );  
         return ;
     }
-    
+
     my $id = $self->my_select_insert( {
         data => {
             Path         => $path,

@@ -20,6 +20,7 @@ my $flickr = FlickrSync->new( {
 
 
 $flickr->sync_flickr_to_db( {
-    user_id => '138370151@N02'
+    user_id => '138370151@N02',
+    filter  => '2019_06_17_baboci'
 } );
 

@@ -53,7 +53,7 @@ my $res = $ua->upload(
 
 # 2019_04_08_vacratot_arboretum
 my $folders = $flickr->get_photosets_key_folder() || {};
-my $root_folder = "z:\\2019\/2019_06_02_baboci\/";
+my $root_folder = "z:\\2019\/2019_06_17_baboci\/";
 my $root_set = "__2019__";
 my $skip = "xmp|NEF|arw|dng";
 
@@ -92,6 +92,9 @@ sub create_photoset {
                                               primary_photo_id => $photo_id,
                                               auth_token       => $ua );
         $folders->{ $set } = $photoset_id;
+
+        $flickr->add_set_to_db( $flickr->get_set_info( { photoset_id => $photoset_id } ) );
+
         $log->info( "Created photoset, id = $photoset_id\n" );
     }
 
@@ -138,7 +141,7 @@ sub process {
         #'async'      => 1
     ) or $log->info( "Failed to upload $path - *******E R R O R" ) and next;
 
-    $flickr->add_file_to_db();
+    #$flickr->add_file_to_db( $path ) ;
 
     $log->info( "\n" . 'Uploading ' . $path . ' FINISHED' . "\n");
     store_photo_in_set($dir, $photo_id);

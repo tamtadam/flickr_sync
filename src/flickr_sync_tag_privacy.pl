@@ -20,7 +20,7 @@ my $flickr = FlickrSync->new( {
 
 
 print Dumper $flickr->set_perms_for_set( {
-    filter   => "2019_06_02_baboci",
+    filter   => "2019_06_17_baboci",
     user_id  => '138370151@N02',
     is_family => 1,
 } );
